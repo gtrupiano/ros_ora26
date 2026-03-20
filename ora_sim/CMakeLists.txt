@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(ora_description)
+project(ora_sim)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -23,12 +23,15 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-
-install(DIRECTORY 
-  description 
+install(DIRECTORY
+  config
   launch 
-  rviz 
+  models
+  worlds
   DESTINATION share/${PROJECT_NAME}/
 )
+
+# Add hook to helper file which will export the model file path
+ament_environment_hooks("${CMAKE_CURRENT_SOURCE_DIR}/env_config/${PROJECT_NAME}_gz_path.sh.in")
 
 ament_package()
