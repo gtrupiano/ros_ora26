@@ -17,7 +17,7 @@ from ros_gz_sim.actions import GzServer
 def generate_launch_description():
   localization_share = get_package_share_directory('ora_localization')
 
-  ekf_path = os.path.join(localization_share, 'config/rl-ekf.yaml')
+  ekf_path = os.path.join(localization_share, 'config/sim_rl_gps_ekf.yaml')
 
   robot_localization_node = Node(
       package='robot_localization',

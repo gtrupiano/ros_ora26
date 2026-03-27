@@ -70,6 +70,59 @@
     </sensor>
   </gazebo>
 
+  <!-- GPS -->
+  <link name="gps_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.125"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001" />
+    </inertial>
+
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${gps_radius}" length="${gps_height}"/>
+      </geometry>
+    </collision>
+
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${gps_radius}" length="${gps_height}"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="gps_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="gps_link"/>
+    <origin xyz="${gps_x_offset} 0 ${gps_z_offset}" rpy="0 0 0"/>
+  </joint>
+
+  <gazebo reference="gps_link">
+    <sensor name="navsat" type="navsat">
+      <always_on>true</always_on>
+      <update_rate>1</update_rate>
+      <topic>sim/gps/fix</topic>
+      <gz_frame_id>gps_link</gz_frame_id>
+      <navsat>
+        <position_sensing>
+          <horizontal>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>0.0</stddev>
+            </noise>
+          </horizontal>
+          <vertical>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>0.0</stddev>
+            </noise>
+          </vertical>
+        </position_sensing>
+      </navsat>
+    </sensor>
+  </gazebo>
 
   <!-- IMU -->
   <link name="imu_link">
