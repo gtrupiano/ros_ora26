@@ -23,6 +23,7 @@
       <geometry>
         <cylinder radius="${lidar_radius}" length="${lidar_height}"/>
       </geometry>
+      <material name="dark_gray"/>
     </visual>
   </link>
 
@@ -70,6 +71,60 @@
     </sensor>
   </gazebo>
 
+  <!-- GPS -->
+  <link name="gps_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.125"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001" />
+    </inertial>
+
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${gps_radius}" length="${gps_height}"/>
+      </geometry>
+    </collision>
+
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${gps_radius}" length="${gps_height}"/>
+      </geometry>
+      <material name="dark_gray"/>
+    </visual>
+  </link>
+
+  <joint name="gps_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="gps_link"/>
+    <origin xyz="${gps_x_offset} 0 ${gps_z_offset}" rpy="0 0 0"/>
+  </joint>
+
+  <gazebo reference="gps_link">
+    <sensor name="navsat" type="navsat">
+      <always_on>true</always_on>
+      <update_rate>1</update_rate>
+      <topic>sim/gps/fix</topic>
+      <gz_frame_id>gps_link</gz_frame_id>
+      <navsat>
+        <position_sensing>
+          <horizontal>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>0.0</stddev>
+            </noise>
+          </horizontal>
+          <vertical>
+            <noise type="gaussian">
+              <mean>0.0</mean>
+              <stddev>0.0</stddev>
+            </noise>
+          </vertical>
+        </position_sensing>
+      </navsat>
+    </sensor>
+  </gazebo>
 
   <!-- IMU -->
   <link name="imu_link">
@@ -84,6 +139,7 @@
       <geometry>
         <box size="0.1 0.1 0.1"/>
       </geometry>
+      <material name="dark_gray"/>
     </visual>
 
     <collision>
@@ -106,7 +162,7 @@
       <always_on>true</always_on>
       <update_rate>100</update_rate>
       <visualize>true</visualize>
-      <topic>demo/imu</topic>
+      <topic>sim/imu</topic>
       <gz_frame_id>imu_link</gz_frame_id>
 
       <imu>
@@ -164,37 +220,5 @@
         </linear_acceleration>
       </imu>
     </sensor>
-  </gazebo>
-
-  <gazebo>
-    <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
-      <!-- wheels -->
-      <left_joint>left_wheel_joint</left_joint>
-      <right_joint>right_wheel_joint</right_joint>
-
-      <!-- kinematics -->
-      <wheel_separation>${base_width}</wheel_separation>
-      <wheel_radius>${main_wheel_radius}</wheel_radius>
-
-      <!-- limits -->
-      <max_linear_acceleration>2.0</max_linear_acceleration>
-      <min_linear_acceleration>-2.0</min_linear_acceleration>
-
-      <!-- input -->
-      <topic>/demo/cmd_vel</topic>
-
-      <!-- output -->
-      <odom_topic>/demo/odom</odom_topic>
-      <tf_topic>/tf</tf_topic>
-
-      <frame_id>odom</frame_id>
-      <child_frame_id>base_link</child_frame_id>
-    </plugin>
-
-    <plugin
-      filename="gz-sim-joint-state-publisher-system"
-      name="gz::sim::systems::JointStatePublisher">
-      <topic>joint_states</topic>
-    </plugin>
   </gazebo>
 </robot>
