@@ -39,7 +39,7 @@ def generate_launch_description():
       }
     ],
     remappings=[
-      ('/imu/data', '/imu'),
+      ('/imu/data', '/esp/imu'),
       ('/odom/wheels', '/diff_cont/odom'),
       ('/gnss/fix', '/gnss/fix'),
     ]
