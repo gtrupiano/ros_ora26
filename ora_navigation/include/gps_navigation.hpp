@@ -1,5 +1,5 @@
-#ifndef GPS_WAYPOINT_FOLLOWER
-#define GPS_WAYPOINT_FOLLOWER
+#ifndef GPS_WAYPOINT_FOLLOWER_HPP_
+#define GPS_WAYPOINT_FOLLOWER_HPP_
 
 #include <chrono>
 #include <memory>
@@ -9,22 +9,52 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
-#include <ament_index_cpp/get_package_share_directory.hpp>
 
+#include "nav_msgs/msg/odometry.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 
 #include "fusioncore_ros/srv/from_ll.hpp"
 #include "geographic_msgs/msg/geo_point.hpp"
 #include "geometry_msgs/msg/point.hpp"
+#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 
-#include "std_srvs/srv/set_bool.hpp"
-#include "std_srvs/srv/trigger.hpp"
 #include "action_msgs/srv/cancel_goal.hpp"
 
-class GpsWaypointFollower : public rclcpp::Node
+#include "../include/navigation.hpp"
+
+using NavigateToPose = nav2_msgs::action::NavigateToPose;
+
+/**
+ * GpsNavigation derived from the Navigation base class.
+ * Used for GPS navigation between defined lat/lon waypoints.
+ */
+class GpsNavigation : public Navigation
 {
 public:
-  GpsWaypointFollower();
+  GpsNavigation(
+    rclcpp::Logger logger,
+    rclcpp::Clock::SharedPtr clock,
+    rclcpp::Client<fusioncore_ros::srv::FromLL>::SharedPtr from_ll_client,
+    rclcpp_action::Client<NavigateToPose>::SharedPtr nav_to_pose_client,
+    std::string waypoint_file_path
+  );
+
+  struct NavigationState
+  {
+    std::vector<geometry_msgs::msg::Point> localized_waypoints;
+    size_t active_index;
+    std::string starting_direction;
+  };
+
+  // Navigation Control Interfaces
+  void startNavigation() override;
+  void stopNavigation() override;
+  void resetNavigation() override;
+
+  // Navigation Information Interfaces
+  void updatePose(const geometry_msgs::msg::PoseWithCovarianceStamped pose);
+  void setCourse(const bool is_practice_course);
+  const NavigationState getNavigationState();
 
 private:
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
@@ -36,11 +66,7 @@ private:
     std::vector<geographic_msgs::msg::GeoPoint>& destination_vector
   );
   void transformNextWaypoint();
-
-  // Navigation Control
-  void startNavigation();
-  void stopNavigation();
-  void resetNavigation();
+  void addStartingWaypoint();
 
   NavigateToPose::Goal buildNavigateToPoseGoal(
     const geometry_msgs::msg::Point& localized_waypoint
@@ -55,6 +81,9 @@ private:
 
   std::vector<geometry_msgs::msg::Point> localized_waypoints_;
 
+  // Track last known pose
+  geometry_msgs::msg::PoseWithCovarianceStamped last_known_pose_;
+
   // Track auton state
   bool enable_follower_ = false;
   size_t waypoint_transform_index_ = 0;
@@ -63,22 +92,6 @@ private:
   bool waypoints_configured_ = false;
   size_t current_waypoint_index_ = 0;
   size_t retry_events_ = 0;
-
-  // Service Callbacks
-  void setAutonCallback(
-    const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-    std::shared_ptr<std_srvs::srv::SetBool::Response> response
-  );
-
-  void resetAutonCallback(
-    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-    std::shared_ptr<std_srvs::srv::Trigger::Response> response
-  );
-
-  void setCourseCallback(
-    const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-    std::shared_ptr<std_srvs::srv::SetBool::Response> response
-  );
 
   void fromLLCallback(
     geographic_msgs::msg::GeoPoint waypoint,
@@ -105,11 +118,6 @@ private:
 
   // Service Client
   rclcpp::Client<fusioncore_ros::srv::FromLL>::SharedPtr from_ll_client_;
-
-  // Services
-  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr set_auton_srv_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_auton_srv_;
-  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr set_course_srv_;
 
   // Action Client
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_to_pose_client_;

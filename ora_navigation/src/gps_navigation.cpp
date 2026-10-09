@@ -1,61 +1,25 @@
-#include "../include/gps_waypoint_follower.hpp"
+#include "../include/gps_navigation.hpp"
 
 using NavigateToPose = nav2_msgs::action::NavigateToPose;
+using namespace std::chrono_literals;
 
-GpsWaypointFollower::GpsWaypointFollower() : Node("gps_waypoint_follower")
+GpsNavigation::GpsNavigation(
+  rclcpp::Logger logger,
+  rclcpp::Clock::SharedPtr clock,
+  rclcpp::Client<fusioncore_ros::srv::FromLL>::SharedPtr from_ll_client,
+  rclcpp_action::Client<NavigateToPose>::SharedPtr nav_to_pose_client,
+  std::string waypoint_file_path
+) : Navigation(logger, clock), 
+    from_ll_client_(from_ll_client), nav_to_pose_client_(nav_to_pose_client)
 {
-  const auto package_share_dir = ament_index_cpp::get_package_share_directory("ora_navigation");
-  const std::string default_waypoint_file = package_share_dir + "/config/waypoints.yaml";
-
-  this->declare_parameter("waypoints_file", default_waypoint_file);
-
-  const auto waypoints_file = this->get_parameter("waypoints_file").as_string();
-
-  // Create services and assign callbacks
-  set_auton_srv_ = this->create_service<std_srvs::srv::SetBool>(
-    "navigation/set_auton",
-    [this](
-      const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-      std::shared_ptr<std_srvs::srv::SetBool::Response> response
-    )
-    {
-      setAutonCallback(request, response);
-    }
-  );
-
-  reset_auton_srv_ = this->create_service<std_srvs::srv::Trigger>(
-    "navigation/reset_auton",
-    [this](
-      const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-      std::shared_ptr<std_srvs::srv::Trigger::Response> response
-    )
-    {
-      resetAutonCallback(request, response);
-    }
-  );
-
-  set_course_srv_ = this->create_service<std_srvs::srv::SetBool>(
-    "navigation/set_course",
-    [this](
-      const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-      std::shared_ptr<std_srvs::srv::SetBool::Response> response
-    )
-    {
-      setCourseCallback(request, response);
-    }
-  );
-
-  // Service Client
-  from_ll_client_ = this->create_client<fusioncore_ros::srv::FromLL>("/fromLL");
-
-  // Action Client
-  nav_to_pose_client_ = rclcpp_action::create_client<NavigateToPose>(this, "/navigate_to_pose");
-
-  const YAML::Node config_file = YAML::LoadFile(waypoints_file);
+  const YAML::Node config_file = YAML::LoadFile(waypoint_file_path);
   initialize(config_file);
 }
 
-void GpsWaypointFollower::initialize(const YAML::Node& config)
+/**
+ * Reset waypoints and navigation index and load waypoints from configuration file
+ */
+void GpsNavigation::initialize(const YAML::Node& config)
 {
   practice_course_waypoints_.clear();
   main_course_waypoints_.clear();
@@ -69,7 +33,7 @@ void GpsWaypointFollower::initialize(const YAML::Node& config)
 /**
  * Load waypoints from the `waypoint_group` file into the `destination_vector`
  */
-void GpsWaypointFollower::loadWaypoints(
+void GpsNavigation::loadWaypoints(
   const YAML::Node& waypoint_group,
   std::vector<geographic_msgs::msg::GeoPoint>& destination_vector
 )
@@ -77,7 +41,7 @@ void GpsWaypointFollower::loadWaypoints(
   if (!waypoint_group || !waypoint_group.IsSequence())
   {
     RCLCPP_WARN(
-      this->get_logger(),
+      logger_,
       "Waypoint group is missing or is not a list."
     );
     return;
@@ -90,7 +54,7 @@ void GpsWaypointFollower::loadWaypoints(
     if (!waypoint["lat"] || !waypoint["lon"])
     {
       RCLCPP_WARN(
-        this->get_logger(),
+        logger_,
         "Waypoint %s is missing lat or lon, skipping...",
         name.c_str()
       );
@@ -105,7 +69,7 @@ void GpsWaypointFollower::loadWaypoints(
   }
 
   RCLCPP_INFO(
-    this->get_logger(),
+    logger_,
     "Waypoint group loaded."
   );
 }
@@ -114,12 +78,12 @@ void GpsWaypointFollower::loadWaypoints(
  * Use the `/fromLL` service from `fusioncore_ros` to
  * transform a waypoint from GPS to the local coordinate system
  */
-void GpsWaypointFollower::transformNextWaypoint()
+void GpsNavigation::transformNextWaypoint()
 {
   if (!from_ll_client_->service_is_ready())
   {
     RCLCPP_WARN(
-      this->get_logger(),
+      logger_,
       "/fromLL service is not available yet."
     );
     return;
@@ -128,10 +92,13 @@ void GpsWaypointFollower::transformNextWaypoint()
   if (waypoint_transform_index_ >= selected_waypoints_.size())
   {
     RCLCPP_INFO(
-      this->get_logger(),
+      logger_,
       "Successfully transformed %zu GPS waypoints.",
       localized_waypoints_.size()
     );
+
+    // Add current location at the end of the localized_waypoints_ for navigation back to start
+    addStartingWaypoint();
 
     startNavigation();
 
@@ -154,12 +121,89 @@ void GpsWaypointFollower::transformNextWaypoint()
   );
 }
 
-void GpsWaypointFollower::startNavigation()
+/**
+ * 
+ */
+void GpsNavigation::updatePose(const geometry_msgs::msg::PoseWithCovarianceStamped pose)
 {
+
+  last_known_pose_ = pose;
+}
+
+/**
+ * 
+ */
+void GpsNavigation::setCourse(const bool is_practice_course)
+{
+
+  practice_course_ = is_practice_course;
+
+  waypoints_configured_ = false;
+  current_waypoint_index_ = 0;
+  waypoint_transform_index_ = 0;
+  localized_waypoints_.clear();
+}
+
+const GpsNavigation::NavigationState GpsNavigation::getNavigationState()
+{
+  NavigationState navigation_state;
+
+  navigation_state.localized_waypoints = localized_waypoints_;
+  navigation_state.active_index = current_waypoint_index_;
+  navigation_state.starting_direction = practice_course_ ? "Practice Course" : "North Course";
+
+  return navigation_state;
+}
+
+/**
+ * 
+ */
+void GpsNavigation::addStartingWaypoint()
+{
+  // Last known pose is good for starting pose
+  auto starting_pose = this->last_known_pose_.pose.pose;
+
+  RCLCPP_INFO(
+    logger_,
+    "Adding the point x=%.3f, y=%.3f as the starting waypoint",
+    starting_pose.position.x, starting_pose.position.y
+  );
+
+  localized_waypoints_.push_back(starting_pose.position);
+}
+
+/**
+ * 
+ */
+void GpsNavigation::startNavigation()
+{
+  RCLCPP_INFO(
+    logger_,
+    "Starting GPS based navigation."
+  );
+
+  enable_follower_ = true;
+
+  // Configure waypoints if there is no configuration
+  if (!waypoints_configured_)
+  {
+    // Get vector of waypoints
+    selected_waypoints_ = practice_course_ ? practice_course_waypoints_ : main_course_waypoints_;
+
+    // Reset waypoint index and vector
+    waypoint_transform_index_ = 0;
+    localized_waypoints_.clear();
+    waypoints_configured_ = true;
+
+    transformNextWaypoint();
+
+    return;
+  }
+
   if (localized_waypoints_.empty())
   {
     RCLCPP_WARN(
-      this->get_logger(),
+      logger_,
       "No localized waypoints available"
     );
 
@@ -170,7 +214,7 @@ void GpsWaypointFollower::startNavigation()
   if (current_waypoint_index_ >= localized_waypoints_.size())
   {
     RCLCPP_INFO(
-      this->get_logger(),
+      logger_,
       "Successfully navigated to all waypoints. Resetting navigation to first waypoint."
     );
 
@@ -180,7 +224,7 @@ void GpsWaypointFollower::startNavigation()
   }
 
   RCLCPP_INFO(
-    this->get_logger(),
+    logger_,
     "Starting navigation to waypoint %zu",
     current_waypoint_index_
   );
@@ -192,21 +236,26 @@ void GpsWaypointFollower::startNavigation()
  * Cancel the current Nav2 goal
  * Does not restart navigation from the beginning unless `resetNavigation()` is called in tandem
  */
-void GpsWaypointFollower::stopNavigation()
+void GpsNavigation::stopNavigation()
 {
+  RCLCPP_INFO(
+    logger_,
+    "Stopping GPS based navigation."
+  );
+
   enable_follower_ = false;
 
   if (!current_goal_handle_)
   {
     RCLCPP_INFO(
-      this->get_logger(),
+      logger_,
       "Waypoint follower stopped. No active goal to cancel."
     );
     return;
   }
 
   RCLCPP_INFO(
-    this->get_logger(),
+    logger_,
     "Canceling active Nav2 goal."
   );
 
@@ -225,12 +274,14 @@ void GpsWaypointFollower::stopNavigation()
  * Allow waypoints to be reconfigured
  * Reset the current goal to first waypoint
  */
-void GpsWaypointFollower::resetNavigation()
+void GpsNavigation::resetNavigation()
 {
   RCLCPP_INFO(
-    this->get_logger(),
-    "Waypoint navigation reset"
+    logger_,
+    "Resetting GPS based navigation."
   );
+
+  enable_follower_ = false;
 
   waypoints_configured_ = false;
   waypoint_transform_index_ = 0;
@@ -238,7 +289,7 @@ void GpsWaypointFollower::resetNavigation()
   current_waypoint_index_ = 0;
 }
 
-NavigateToPose::Goal GpsWaypointFollower::buildNavigateToPoseGoal(
+NavigateToPose::Goal GpsNavigation::buildNavigateToPoseGoal(
   const geometry_msgs::msg::Point& localized_waypoint
 )
 {
@@ -247,7 +298,7 @@ NavigateToPose::Goal GpsWaypointFollower::buildNavigateToPoseGoal(
 
   // Set goal position to localized waypoint
   goal_msg.pose.header.frame_id = "odom";
-  goal_msg.pose.header.stamp = this->get_clock()->now();
+  goal_msg.pose.header.stamp = clock_->now();
   goal_msg.pose.pose.position.x = localized_waypoint.x;
   goal_msg.pose.pose.position.y = localized_waypoint.y;
   goal_msg.pose.pose.position.z = localized_waypoint.z;
@@ -261,12 +312,12 @@ NavigateToPose::Goal GpsWaypointFollower::buildNavigateToPoseGoal(
   return goal_msg;
 }
 
-void GpsWaypointFollower::navigateToWaypoint(const geometry_msgs::msg::Point& localized_waypoint)
+void GpsNavigation::navigateToWaypoint(const geometry_msgs::msg::Point& localized_waypoint)
 {
   if (!this->nav_to_pose_client_->wait_for_action_server())
   {
     RCLCPP_ERROR(
-      this->get_logger(),
+      logger_,
       "Action server not available"
     );
     return;
@@ -275,7 +326,7 @@ void GpsWaypointFollower::navigateToWaypoint(const geometry_msgs::msg::Point& lo
   auto goal_msg = buildNavigateToPoseGoal(localized_waypoint);
 
   RCLCPP_INFO(
-    this->get_logger(),
+    logger_,
     "Sending goal to navigate to {x: %.2f, y: %.2f}",
     goal_msg.pose.pose.position.x, goal_msg.pose.pose.position.y
   );
@@ -314,106 +365,9 @@ void GpsWaypointFollower::navigateToWaypoint(const geometry_msgs::msg::Point& lo
 }
 
 /**
- * `request->data: false` - Autonomous control disabled
- * `request->data: true` - Autonomous control enabled
- */
-void GpsWaypointFollower::setAutonCallback(
-  const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-  std::shared_ptr<std_srvs::srv::SetBool::Response> response
-)
-{
-  enable_follower_ = request->data;
-
-  if (!enable_follower_)
-  {
-    stopNavigation();
-
-    response->success = true;
-    response->message = "Waypoint follower disabled";
-    return;
-  }
-
-  if (!waypoints_configured_)
-  {
-    // Get vector of waypoints
-    selected_waypoints_ = practice_course_ ? practice_course_waypoints_ : main_course_waypoints_;
-
-    // Reset waypoint index and vector
-    waypoint_transform_index_ = 0;
-    localized_waypoints_.clear();
-    waypoints_configured_ = true;
-
-    response->success = true;
-    response->message = "Waypoint follower enabled, transforming waypoints";
-
-    transformNextWaypoint();
-    return;
-  }
-
-  response->success = true;
-  response->message = "Waypoint follower enabled, resuming navigation";
-
-  startNavigation();
-}
-
-/**
- * Sending a `Trigger` request sets navigation back to initial values
- */
-void GpsWaypointFollower::resetAutonCallback(
-  const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-  std::shared_ptr<std_srvs::srv::Trigger::Response> response
-)
-{
-  (void) request;
-
-  stopNavigation();
-  resetNavigation();
-
-  response->success = true;
-  response->message = "Reset navigation values.";
-}
-
-/**
- * `request->data: false` - Main Course in use
- * `request->data: true` - Practice Course in use
- */
-void GpsWaypointFollower::setCourseCallback(
-  const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-  std::shared_ptr<std_srvs::srv::SetBool::Response> response
-)
-{
-  practice_course_ = request->data;
-  response->success = true;
-
-  waypoints_configured_ = false;
-  current_waypoint_index_ = 0;
-  waypoint_transform_index_ = 0;
-  localized_waypoints_.clear();
-
-  if (practice_course_)
-  {
-    response->message = "Practice Course Waypoint Navigation";
-
-    RCLCPP_INFO(
-      this->get_logger(),
-      "Practice course navigation enabled"
-    );
-  }
-  else
-  {
-    response->message = "Main Course Waypoint Navigation";
-
-    RCLCPP_INFO(
-      this->get_logger(),
-      "Main course navigation enabled"
-    );
-  }
-}
-
-/**
  * Called when a message is received from the `/from_ll` service
  */
-void GpsWaypointFollower::fromLLCallback(
+void GpsNavigation::fromLLCallback(
   geographic_msgs::msg::GeoPoint waypoint,
   rclcpp::Client<fusioncore_ros::srv::FromLL>::SharedFuture future_response
 )
@@ -424,7 +378,7 @@ void GpsWaypointFollower::fromLLCallback(
   if ((point.x == 0.0) && (point.y == 0.0) && (point.z == 0.0))
   {
     RCLCPP_WARN(
-      this->get_logger(),
+      logger_,
       "FusionCore returned (0, 0, 0). GPS reference may not be set. " \
       "Waypoint lat=%f, lon=%f was not added.",
       waypoint.latitude,
@@ -438,7 +392,7 @@ void GpsWaypointFollower::fromLLCallback(
   localized_waypoints_.push_back(point);
 
   RCLCPP_INFO(
-    this->get_logger(),
+    logger_,
     "Converted GPS waypoint lat=%f, lon=%f -> x=%.3f, y=%.3f",
     waypoint.latitude,
     waypoint.longitude,
@@ -453,14 +407,14 @@ void GpsWaypointFollower::fromLLCallback(
 /**
  * Called whenever a response is received by the `/navigate_to_pose` client
  */
-void GpsWaypointFollower::navGoalResponseCallback(
+void GpsNavigation::navGoalResponseCallback(
   const rclcpp_action::ClientGoalHandle<NavigateToPose>::SharedPtr& goal_handle
 )
 {
   if (!goal_handle)
   {
     RCLCPP_ERROR(
-      this->get_logger(),
+      logger_,
       "Goal was rejected by server"
     );
 
@@ -471,19 +425,19 @@ void GpsWaypointFollower::navGoalResponseCallback(
   current_goal_handle_ = goal_handle;
 
   RCLCPP_INFO(
-    this->get_logger(),
+    logger_,
     "Goal was accepted by server, waiting for result"
   );
 }
 
-void GpsWaypointFollower::navGoalFeedbackCallback(
+void GpsNavigation::navGoalFeedbackCallback(
   rclcpp_action::ClientGoalHandle<NavigateToPose>::SharedPtr,
   const std::shared_ptr<const NavigateToPose::Feedback> feedback
 )
 {
   RCLCPP_INFO_THROTTLE(
-    this->get_logger(),
-    *this->get_clock(),
+    logger_,
+    *clock_,
     1000,
     "current_pose: x:%.2f, y:%.2f, distance_remaining:%.2f",
     feedback->current_pose.pose.position.x,
@@ -495,7 +449,7 @@ void GpsWaypointFollower::navGoalFeedbackCallback(
 /**
  * Called whenever a goal is received by the `/navigate_to_pose` client
  */
-void GpsWaypointFollower::navGoalResultCallback(
+void GpsNavigation::navGoalResultCallback(
   const rclcpp_action::ClientGoalHandle<NavigateToPose>::WrappedResult& result
 )
 {
@@ -504,7 +458,7 @@ void GpsWaypointFollower::navGoalResultCallback(
   if (!enable_follower_)
   {
     RCLCPP_INFO(
-      this->get_logger(),
+      logger_,
       "Waypoint follower is disabled, ignoring Nav2 result"
     );
     return;
@@ -516,7 +470,7 @@ void GpsWaypointFollower::navGoalResultCallback(
     case rclcpp_action::ResultCode::SUCCEEDED:
     {
       RCLCPP_INFO(
-        this->get_logger(),
+        logger_,
         "Reached waypoint %zu",
         current_waypoint_index_ + 1
       );
@@ -527,7 +481,7 @@ void GpsWaypointFollower::navGoalResultCallback(
       if (current_waypoint_index_ >= localized_waypoints_.size())
       {
         RCLCPP_INFO(
-          this->get_logger(),
+          logger_,
           "Navigation complete"
         );
 
@@ -544,7 +498,7 @@ void GpsWaypointFollower::navGoalResultCallback(
     case rclcpp_action::ResultCode::CANCELED:
     {
       RCLCPP_INFO(
-        this->get_logger(),
+        logger_,
         "Waypoint navigation goal canceled."
       );
 
@@ -556,14 +510,14 @@ void GpsWaypointFollower::navGoalResultCallback(
     case rclcpp_action::ResultCode::ABORTED:
     {
       RCLCPP_ERROR(
-        this->get_logger(),
+        logger_,
         "Navigation goal was aborted by Nav2"
       );
 
       if (!enable_follower_)
       {
         RCLCPP_INFO(
-          this->get_logger(),
+          logger_,
           "Follower not enabled, ending navigation"
         );
 
@@ -571,7 +525,7 @@ void GpsWaypointFollower::navGoalResultCallback(
       }
 
       RCLCPP_INFO(
-        this->get_logger(),
+        logger_,
         "Follower still enabled, restarting navigation"
       );
 
@@ -584,7 +538,7 @@ void GpsWaypointFollower::navGoalResultCallback(
       else
       {
         RCLCPP_ERROR(
-          this->get_logger(),
+          logger_,
           "Too many retries, aborting navigation"
         );
 
@@ -598,7 +552,7 @@ void GpsWaypointFollower::navGoalResultCallback(
     default:
     {
       RCLCPP_ERROR(
-          this->get_logger(),
+          logger_,
           "Finished with unknown result code"
         );
 
@@ -611,36 +565,25 @@ void GpsWaypointFollower::navGoalResultCallback(
 /**
  * Called whenever a cancel response is received by the `/navigate_to_pose` client
  */
-void GpsWaypointFollower::navCancelGoalCallback(
+void GpsNavigation::navCancelGoalCallback(
   const std::shared_ptr<action_msgs::srv::CancelGoal_Response>& cancel_response
 )
 {
   if (cancel_response->return_code == action_msgs::srv::CancelGoal::Response::ERROR_NONE)
   {
     RCLCPP_INFO(
-      this->get_logger(),
+      logger_,
       "Nav2 goal cancelled successfully"
     );
   }
   else
   {
     RCLCPP_WARN(
-      this->get_logger(),
+      logger_,
       "Nav2 goal cancelled with an error. Return code: %d",
       cancel_response->return_code
     );
   }
 
   current_goal_handle_.reset();
-}
-
-int main(int argc, char** argv)
-{
-  rclcpp::init(argc, argv);
-
-  auto node = std::make_shared<GpsWaypointFollower>();
-  rclcpp::spin(node);
-
-  rclcpp::shutdown();
-  return 0;
 }
